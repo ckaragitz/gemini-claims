@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydub
+Pillow
+vertexai
+speechrecognition
+jinja2
