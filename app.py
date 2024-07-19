@@ -34,7 +34,7 @@ vertexai.init(project="amfam-claims", location="us-central1")
 
 @app.post("/")
 async def main(request: Request):
-    return JSONResponse(content={"Available APIs": ["/chat", "/transcribe", "/image"]}, status_code=200)
+    return JSONResponse(content={"Available APIs": ["/chat", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
 
 @app.post("/chat")
 async def chat(request: Request):
@@ -157,6 +157,45 @@ async def chat(request: Request):
     except:
         print("Error:", model_response.text)
         raise HTTPException(status_code=500, detail="Request to Gemini Pro's chat feature failed.")
+
+@app.post("/summarize")
+async def summarize_claim(request: Request):
+
+    request_json = await request.json()
+
+    claim = request_json.get("claim")
+
+    prompt = f"""
+    Look at this Insurance Claim <claim> {claim} </claim>. Summarize it for me very succinctly.
+    I am an adjuster for American Family Insurance. I need to know the immediate details, if I should act quickly, call out observations, and tell me my recommended next steps.
+
+    Please do not re-state the data points from the key-value pairs. Use critical thinking and describe the situation to me in 3 sentences.
+
+    Use bulletpoints where appropriate."""
+
+    # initialize the model, set the parameters
+    model = GenerativeModel("gemini-1.5-flash-001")
+    parameters = {
+        "max_output_tokens": 8192,
+        "temperature": 0.2,
+        "top_p": 0.8,
+        "top_k": 40,
+        "candidate_count": 1,
+        #stopSequences: [str]
+    }
+
+    try:
+        model_response = model.generate_content(
+        prompt,
+        generation_config=parameters,
+        #safety_settings=safety_settings,
+        #stream=False,
+        )
+
+        return PlainTextResponse(content=model_response.text, status_code=200)
+    except Exception as e:
+        print("Error:", model_response.text)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.post("/transcribe")
 async def transcribe(request: Request):
@@ -297,23 +336,32 @@ async def process_bounding_box_image(request: Request):
 
 @app.post("/image")
 async def process_image(request: Request):
-
     request_json = await request.json()
 
     if "image" in request_json:
         base64_image = request_json['image']
+
+    # Add debug print statements
+    print(f"Received base64_image: {type(base64_image)}")  # Should be <class 'str'>
 
     inference = gemini_image_description(base64_image)
 
     payload = {'inference_results': inference.get("description")}
     return JSONResponse(content=payload, status_code=200)
 
-# Helpfer function for image inference (makes the request to Gemini)
+# Helper function for image inference (makes the request to Gemini)
 def gemini_image_description(base64_image):
+    # Add debug print statements
+    print(f"Decoding base64 image data: {type(base64_image)}")  # Should be <class 'str'>
+
+    try:
+        decoded_image = base64.b64decode(base64_image)
+    except Exception as e:
+        logger.error(f"Error decoding base64 string: {e}")
+        return {"description": "Error decoding base64 string", "damages": "Error decoding base64 string"}
 
     model = GenerativeModel("gemini-1.5-flash-001")
-
-    image_part = Part.from_data(mime_type="image/jpeg", data=base64.b64decode(base64_image))
+    image_part = Part.from_data(mime_type="image/jpeg", data=decoded_image)
 
     generation_config = {
         "max_output_tokens": 500,
@@ -323,10 +371,10 @@ def gemini_image_description(base64_image):
         "candidate_count": 1
     }
     safety_settings = {
-    generative_models.HarmCategory.HARM_CATEGORY_HATE_SPEECH: generative_models.HarmBlockThreshold.BLOCK_NONE,
-    generative_models.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
-    generative_models.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: generative_models.HarmBlockThreshold.BLOCK_NONE,
-    generative_models.HarmCategory.HARM_CATEGORY_HARASSMENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
+        generative_models.HarmCategory.HARM_CATEGORY_HATE_SPEECH: generative_models.HarmBlockThreshold.BLOCK_NONE,
+        generative_models.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
+        generative_models.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: generative_models.HarmBlockThreshold.BLOCK_NONE,
+        generative_models.HarmCategory.HARM_CATEGORY_HARASSMENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
     }
 
     try:
@@ -421,3 +469,8 @@ async def generate_comms(request: Request):
     except Exception as e:
         print("Error:", model_response.text)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+if __name__ == "__main__":
+  port = int(os.environ.get('PORT', 8080))
+  import uvicorn
+  uvicorn.run(app, host="0.0.0.0", port=port)
