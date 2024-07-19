@@ -34,7 +34,7 @@ vertexai.init(project="amfam-claims", location="us-central1")
 
 @app.post("/")
 async def main(request: Request):
-    return JSONResponse(content={"Available APIs": ["/chat", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
+    return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
 
 @app.post("/chat")
 async def chat(request: Request):
