@@ -100,7 +100,7 @@ async def chat(request: Request):
     del message_history[-1]
 
     try:
-        # Parse the policy document for a grounded answer to the user's question
+        # Parse documents, including the customer's policy, to ground the answers
         rag_response = generate_rag_response(prompt=message)
         logger.info(f"RAG RESPONSE: {rag_response}")
     except Exception as e:
@@ -125,10 +125,11 @@ async def chat(request: Request):
         {claim}
         </claim>
 
-        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
-        <rag>
+        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
+        If the user asks about the customer's policy, make sure to leverage this data in your response:
+        <data>
         {rag_response}
-        </rag>"""
+        </data>"""
     elif "claim" in request_json:
         claim = request_json.get("claim")
 
@@ -139,16 +140,18 @@ async def chat(request: Request):
         {claim}
         </claim>
 
-        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
-        <rag>
+        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
+        If the user asks about the customer's policy, make sure to leverage this data in your response:
+        <data>
         {rag_response}
-        </rag>"""
+        </data>"""
     else:
         context = f"""
-        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
-        <rag>
+        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
+        If the user asks about the customer's policy, make sure to leverage this data in your response:
+        <data>
         {rag_response}
-        </rag>"""
+        </data>"""
 
     # initialize the model, set the parameters
     model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
