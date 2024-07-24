@@ -80,6 +80,7 @@ async def chat(chat_request: ChatRequest):
     """
         POST body
         {
+            "session_id": "" OR "11111111-1111-1111-1111-111111111111",
             "claim": {"id": 123, "loss_description": "AAAAAAA", ...},
             "image_description": "BBBBBBB",
             "messages": [
