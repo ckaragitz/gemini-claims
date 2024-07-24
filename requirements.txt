@@ -2,6 +2,6 @@ fastapi
 uvicorn
 pydub
 Pillow
-vertexai
+google-cloud-aiplatform==1.59.0
 speechrecognition
 jinja2
