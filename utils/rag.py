@@ -8,6 +8,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+### The function that delivers the grounded response is called 'generate_rag_response' ###
+
 # Global variables
 project_id = "amfam-claims"
 location = "us-central1"
@@ -50,6 +52,7 @@ def ingest_files(paths):
     return file_import_response
 
 def list_corpora():
+    # Lists all RagCorpora instances
     try:
         corpora = rag.list_corpora()
 
@@ -62,6 +65,7 @@ def list_corpora():
         return str(e)
 
 def get_first_corpus():
+    # Grabs the first corpus and returns it's name - assuming you only have one
     try:
         corpora = rag.list_corpora()
 
@@ -71,7 +75,7 @@ def get_first_corpus():
 
         return corpus_name
     except Exception as e:
-        logger.error(f"Error listing corpora: {e}")
+        logger.error(f"Error getting name: {e}")
         return str(e)
 
 def list_files_in_corpus():
