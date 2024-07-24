@@ -3,14 +3,18 @@ import os
 from pydub import AudioSegment
 from io import BytesIO
 from PIL import Image
+from uuid import uuid4
+import json
 
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part, Content
+from vertexai.generative_models import GenerativeModel, ChatSession, Part, Content
 import vertexai.preview.generative_models as generative_models
 
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
+from typing import List, Optional
 
 from utils.audio import save_base64_to_file
 from utils.image import gemini_image_description
@@ -32,24 +36,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-### GLOBAL VARIABLES ###
+# Initialize Vertex AI once for the application
 vertexai.init(project="amfam-claims", location="us-central1")
+
+# In-memory store for chat sessions
+global chat_sessions
+chat_sessions = {}
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = ""
+    claim: dict
+    image_description: Optional[str] = None
+    messages: List[Message]
+
+class ChatResponse(BaseModel):
+    session_id: str
+    role: str
+    content: str
 
 @app.get("/")
 async def main(request: Request):
     return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
 
-@app.post("/chat")
-async def chat(request: Request):
-    # Last message (:-1) in the "messages" array is the current request for prediction
+# Helper function for the Chat endpoint
+def get_chat_session(session_id: str, context: str) -> ChatSession:
+
+    logger.info(f"CHAT SESSIONS: {chat_sessions}")
+
+    if session_id not in chat_sessions:
+        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
+        chat = model.start_chat()
+        chat_sessions[session_id] = chat
+
+        logger.info(f"CHAT SESSION ADDED: {session_id}")
+    return chat_sessions[session_id]
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(chat_request: ChatRequest):
     """
         POST body
         {
-            "candidate_count": 1,
-            "temperature": 0.4,
-            "max_output_tokens": 500,
-            "top_p": 0.8,
-            "top_k": 40,
+            "claim": {"id": 123, "loss_description": "AAAAAAA", ...},
+            "image_description": "BBBBBBB",
             "messages": [
                 {
                     "role": "user",
@@ -61,67 +93,20 @@ async def chat(request: Request):
                 },
                 {
                     "role": "user",
-                    "content": "AAAAAAA"
+                    "content": "ZZZZZZZ"
                 }
             ]
         }
     """
 
-    # set CORS headers for the preflight request
-    if request.method == "OPTIONS":
-        # allows GET requests from any origin with the Content-Type
-        # header and caches preflight response for an 3600s
-        headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Max-Age": "3600",
-        }
+    # Grab the claim / image_description sent in the POST bodys
+    claim = chat_request.claim
+    image_description = chat_request.image_description
+    # Convert the claim dictionary to a formatted string for the context
+    claim_str = json.dumps(claim, indent=2)
 
-        return ("", 204, headers)
-
-    # extract POST body's data
-    request_json = await request.json()
-
-    # Build message history as an array of Content objects
-    messages = request_json.get("messages")
-    # Retool uses the role value "assistant"
-    message_history = [
-    Content(role="model" if msg['role'] == "assistant" else msg['role'],
-            parts=[Part.from_text(msg['content'])])
-    for msg in messages
-    ]
-
-    # Text for prediction (user's question / statement)
-    message = messages[-1]["content"]
-    logger.info(f"MESSAGE: {message}")
-
-    # Removes the last item, due to multiturn requirements of Gemini's history parameter
-    del message_history[-1]
-
-    # Set the context - given the model any information it needs to answer the questions
-    if "claim" in request_json and "image_description" in request_json:
-        claim = request_json.get("claim")
-        image_description = request_json.get("image_description")
-
-        # Prompt to send to Vertex AI / LlamaIndex for RAG
-        rag_prompt = f"""
-        <claim>
-        {claim}
-        <claim>
-
-        <user-question>
-        {message}
-        </user-question>
-        """
-
-        try:
-            # Parse documents, including the customer's policy, to ground the answers
-            rag_response = generate_rag_response(prompt=rag_prompt)
-            logger.info(f"RAG RESPONSE: {rag_response}")
-        except Exception as e:
-            logger.error(f"Error generating RAG response: {e}")
-            return JSONResponse(content={"error": str(e)}, status_code=500)
+    # Set the context based on claim and optionally image_description
+    if image_description:
 
         context = f"""
         You are a digital assistant for Insurance Adjusters.
@@ -133,95 +118,97 @@ async def chat(request: Request):
         </image_description>
 
         <claim>
-        {claim}
-        </claim>
+        {claim_str}
+        </claim>"""
 
-        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
-        If the user asks about the customer's policy, make sure to leverage this data in your response:
-        <data>
-        {rag_response}
-        </data>"""
-    elif "claim" in request_json:
-        claim = request_json.get("claim")
-
-        # Prompt to send to Vertex AI / LlamaIndex for RAG
-        rag_prompt = f"""
-        <claim>
-        {claim}
-        <claim>
-
-        <user-question>
-        {message}
-        </user-question>
-        """
-
-        try:
-            # Parse documents, including the customer's policy, to ground the answers
-            rag_response = generate_rag_response(prompt=rag_prompt)
-            logger.info(f"RAG RESPONSE: {rag_response}")
-        except Exception as e:
-            logger.error(f"Error generating RAG response: {e}")
-            return JSONResponse(content={"error": str(e)}, status_code=500)
+    else:
 
         context = f"""
         You are a digital assistant within the insurance industry.
         You work in the Claims department and you help adjusters. Here is the current claim that the adjuster is working on:
         <claim>
-        {claim}
-        </claim>
+        {claim_str}
+        </claim>"""
 
-        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
-        If the user asks about the customer's policy, make sure to leverage this data in your response:
-        <data>
-        {rag_response}
-        </data>"""
-    else:
-        # Prompt to send to Vertex AI / LlamaIndex for RAG
-        rag_prompt = f"""
-        <user-question>
-        {message}
-        </user-question>
-        """
+    #logger.info(f"CONTEXT: {context}")
 
-        try:
-            # Parse documents, including the customer's policy, to ground the answers
-            rag_response = generate_rag_response(prompt=rag_prompt)
-            logger.info(f"RAG RESPONSE: {rag_response}")
-        except Exception as e:
-            logger.error(f"Error generating RAG response: {e}")
-            return JSONResponse(content={"error": str(e)}, status_code=500)
+    # Grab the session_id (if sent in the POST body) OR generate a new one
+    session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
+     # Grab the messages + history
+    messages = chat_request.messages
 
-        context = f"""
-        Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
-        If the user asks about the customer's policy, make sure to leverage this data in your response:
-        <data>
-        {rag_response}
-        </data>"""
+    '''
+    # Build message history as an array of Content objects
+    message_history = [
+        Content(role="model" if msg.role == "assistant" else msg.role,
+                parts=[Part.from_text(msg.content)])
+        for msg in messages
+    ]
+    '''
 
-    # initialize the model, set the parameters
-    model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
-    chat = model.start_chat(history=message_history)
+    # Most recent message in the array is the user's current prompt
+    message = messages[-1].content
+    logger.info(f"MESSAGE: {message}")
+
+    # Get or create chat session
+    chat = get_chat_session(session_id, context)
+    logger.info(f"CHAT HISTORY: {chat.history}")
+    #logger.info(f"SESSION ID: {session_id}")
+
     parameters = {
         "max_output_tokens": 8192,
         "temperature": 0.8,
         "top_p": 0.8,
         "top_k": 40,
         "candidate_count": 1,
-        #stopSequences: [str]
     }
 
+    # Store the loss description for usage with the RAG retriever
+    loss_description = claim.get("loss_description")
+
+    # Prompt to send to Vertex AI / LlamaIndex for RAG
+    rag_prompt = f"""
+    <claim>
+    {loss_description}
+    <claim>
+
+    <user-question>
+    {message}
+    </user-question>
+    """
+
     try:
-        # send the latest message to gemini-pro (messages[-1]["content"])
-        model_response = chat.send_message(message, generation_config=parameters)
+        # Parse documents, including the customer's policy, to ground the answers
+        rag_response = generate_rag_response(prompt=rag_prompt)
+        logger.info(f"RAG RESPONSE: {rag_response}")
+    except Exception as e:
+        logger.error(f"Error generating RAG response: {e}")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
-        response = {
-            "role": "model",
-            "content": model_response.text,
-        }
+    rag_and_message_prompt = f"""
+    Use the response from the Retrieval Augmented Generation (RAG) system if relevant. Ignore if it is not related to the user's question.
+    <rag-response>
+    {rag_response}
+    </rag-response>
 
-        return JSONResponse(content=response, status_code=200)
-    except:
-        print("Error:", model_response.text)
+    Always answer this question / prompt:
+    <user-question>
+    {message}
+    </user-question>
+    """
+
+    try:
+        model_response = chat.send_message(rag_and_message_prompt, generation_config=parameters)
+
+        response = ChatResponse(
+            session_id=session_id,
+            role="model",
+            content=model_response.text
+        )
+
+        return JSONResponse(content=response.model_dump(), status_code=200)
+    except Exception as e:
+        logger.error(f"Error in chat response: {e}")
         raise HTTPException(status_code=500, detail="Request to Gemini's chat feature failed.")
 
 @app.post("/summarize")
@@ -247,15 +234,12 @@ async def summarize_claim(request: Request):
         "top_p": 0.8,
         "top_k": 40,
         "candidate_count": 1,
-        #stopSequences: [str]
     }
 
     try:
         model_response = model.generate_content(
         prompt,
         generation_config=parameters,
-        #safety_settings=safety_settings,
-        #stream=False,
         )
 
         return PlainTextResponse(content=model_response.text, status_code=200)
@@ -330,15 +314,12 @@ async def transcribe(request: Request):
         "top_p": 0.8,
         "top_k": 40,
         "candidate_count": 1,
-        #stopSequences: [str]
     }
 
     try:
         model_response = model.generate_content(
         prompt,
         generation_config=parameters,
-        #safety_settings=safety_settings,
-        #stream=False,
         )
 
         return PlainTextResponse(content=model_response.text, status_code=200)
@@ -437,15 +418,12 @@ async def generate_comms(request: Request):
         "top_p": 0.8,
         "top_k": 40,
         "candidate_count": 1,
-        #stopSequences: [str]
     }
 
     try:
         model_response = model.generate_content(
         prompt,
         generation_config=parameters,
-        #safety_settings=safety_settings,
-        #stream=False,
         )
 
         return PlainTextResponse(content=model_response.text, status_code=200)
@@ -457,3 +435,4 @@ if __name__ == "__main__":
   port = int(os.environ.get('PORT', 8080))
   import uvicorn
   uvicorn.run(app, host="0.0.0.0", port=port)
+
