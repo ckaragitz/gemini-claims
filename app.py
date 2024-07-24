@@ -99,18 +99,29 @@ async def chat(request: Request):
     # Removes the last item, due to multiturn requirements of Gemini's history parameter
     del message_history[-1]
 
-    try:
-        # Parse documents, including the customer's policy, to ground the answers
-        rag_response = generate_rag_response(prompt=message)
-        logger.info(f"RAG RESPONSE: {rag_response}")
-    except Exception as e:
-        logger.error(f"Error generating RAG response: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
     # Set the context - given the model any information it needs to answer the questions
     if "claim" in request_json and "image_description" in request_json:
         claim = request_json.get("claim")
         image_description = request_json.get("image_description")
+
+        # Prompt to send to Vertex AI / LlamaIndex for RAG
+        rag_prompt = f"""
+        <claim>
+        {claim}
+        <claim>
+
+        <user-question>
+        {message}
+        </user-question>
+        """
+
+        try:
+            # Parse documents, including the customer's policy, to ground the answers
+            rag_response = generate_rag_response(prompt=rag_prompt)
+            logger.info(f"RAG RESPONSE: {rag_response}")
+        except Exception as e:
+            logger.error(f"Error generating RAG response: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
 
         context = f"""
         You are a digital assistant for Insurance Adjusters.
@@ -133,6 +144,25 @@ async def chat(request: Request):
     elif "claim" in request_json:
         claim = request_json.get("claim")
 
+        # Prompt to send to Vertex AI / LlamaIndex for RAG
+        rag_prompt = f"""
+        <claim>
+        {claim}
+        <claim>
+
+        <user-question>
+        {message}
+        </user-question>
+        """
+
+        try:
+            # Parse documents, including the customer's policy, to ground the answers
+            rag_response = generate_rag_response(prompt=rag_prompt)
+            logger.info(f"RAG RESPONSE: {rag_response}")
+        except Exception as e:
+            logger.error(f"Error generating RAG response: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
+
         context = f"""
         You are a digital assistant within the insurance industry.
         You work in the Claims department and you help adjusters. Here is the current claim that the adjuster is working on:
@@ -146,6 +176,21 @@ async def chat(request: Request):
         {rag_response}
         </data>"""
     else:
+        # Prompt to send to Vertex AI / LlamaIndex for RAG
+        rag_prompt = f"""
+        <user-question>
+        {message}
+        </user-question>
+        """
+
+        try:
+            # Parse documents, including the customer's policy, to ground the answers
+            rag_response = generate_rag_response(prompt=rag_prompt)
+            logger.info(f"RAG RESPONSE: {rag_response}")
+        except Exception as e:
+            logger.error(f"Error generating RAG response: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
+
         context = f"""
         Here is potentially relevant information returned by the Data Retrieval system. It has scanned the customer's policy and additional documents.
         If the user asks about the customer's policy, make sure to leverage this data in your response:
