@@ -7,11 +7,14 @@ from PIL import Image
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, Content
 import vertexai.preview.generative_models as generative_models
-from vertexai.language_models import ChatModel, ChatMessage, InputOutputTextPair
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+
+from utils.audio import save_base64_to_file
+from utils.image import gemini_image_description
+from utils.rag import generate_rag_response
 
 import logging
 
@@ -32,7 +35,7 @@ app.add_middleware(
 ### GLOBAL VARIABLES ###
 vertexai.init(project="amfam-claims", location="us-central1")
 
-@app.post("/")
+@app.get("/")
 async def main(request: Request):
     return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
 
@@ -80,42 +83,6 @@ async def chat(request: Request):
     # extract POST body's data
     request_json = await request.json()
 
-    if "claim" in request_json and "image_description" in request_json:
-        claim = request_json.get("claim")
-        image_description = request_json.get("image_description")
-
-        context = f"""
-        You are a digital assistant, named AVA (which stands for "AmFam Virtual Assistant"), for Insurance Adjusters that work at American Family Insurance.
-        Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
-        Be succinct and ensure the user gets the pertinent and important information.
-
-        If I ask for a page number to where it states coverage in my policy, provide the page number (make it up if you don't know).
-        Remember though - always say that it is covered by the policy.
-
-        <image_description>
-        {image_description}
-        </image_description>
-
-        <claim>
-        {claim}
-        </claim>
-
-        <policy>
-        - Premium: $165 per month
-        - Deductible: $1000
-        </policy>"""
-    elif "claim" in request_json:
-        claim = request_json.get("claim")
-
-        context = f"""
-        You are a digital assistant for American Family Insurance.
-        You work in the Claims department and you help adjusters. Here is the current claim that the adjuster is working on:
-        <claim>
-        {claim}
-        </claim>"""
-    else:
-        context = ""
-
     # Build message history as an array of Content objects
     messages = request_json.get("messages")
     # Retool uses the role value "assistant"
@@ -127,17 +94,68 @@ async def chat(request: Request):
 
     # Text for prediction (user's question / statement)
     message = messages[-1]["content"]
-    print("MESSAGE: ", message)
+    logger.info(f"MESSAGE: {message}")
 
     # Removes the last item, due to multiturn requirements of Gemini's history parameter
     del message_history[-1]
+
+    try:
+        # Parse the policy document for a grounded answer to the user's question
+        rag_response = generate_rag_response(prompt=message)
+        logger.info(f"RAG RESPONSE: {rag_response}")
+    except Exception as e:
+        logger.error(f"Error generating RAG response: {e}")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+    # Set the context - given the model any information it needs to answer the questions
+    if "claim" in request_json and "image_description" in request_json:
+        claim = request_json.get("claim")
+        image_description = request_json.get("image_description")
+
+        context = f"""
+        You are a digital assistant for Insurance Adjusters.
+        Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
+        Be succinct and ensure the user gets the pertinent and important information.
+
+        <image_description>
+        {image_description}
+        </image_description>
+
+        <claim>
+        {claim}
+        </claim>
+
+        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
+        <rag>
+        {rag_response}
+        </rag>"""
+    elif "claim" in request_json:
+        claim = request_json.get("claim")
+
+        context = f"""
+        You are a digital assistant within the insurance industry.
+        You work in the Claims department and you help adjusters. Here is the current claim that the adjuster is working on:
+        <claim>
+        {claim}
+        </claim>
+
+        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
+        <rag>
+        {rag_response}
+        </rag>"""
+    else:
+        context = f"""
+        Here is potentially relevant information returned by the RAG system. Determine if you should include it in your final response:
+        <rag>
+        {rag_response}
+        </rag>"""
 
     # initialize the model, set the parameters
     model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
     chat = model.start_chat(history=message_history)
     parameters = {
         "max_output_tokens": 8192,
-        "temperature": 0.9,
+        "temperature": 0.8,
         "top_p": 0.8,
         "top_k": 40,
         "candidate_count": 1,
@@ -156,7 +174,7 @@ async def chat(request: Request):
         return JSONResponse(content=response, status_code=200)
     except:
         print("Error:", model_response.text)
-        raise HTTPException(status_code=500, detail="Request to Gemini Pro's chat feature failed.")
+        raise HTTPException(status_code=500, detail="Request to Gemini's chat feature failed.")
 
 @app.post("/summarize")
 async def summarize_claim(request: Request):
@@ -167,7 +185,7 @@ async def summarize_claim(request: Request):
 
     prompt = f"""
     Look at this Insurance Claim <claim> {claim} </claim>. Summarize it for me very succinctly.
-    I am an adjuster for American Family Insurance. I need to know the immediate details, if I should act quickly, call out observations, and tell me my recommended next steps.
+    I am an adjuster for an insurance company. I need to know the immediate details, if I should act quickly, call out observations, and tell me my recommended next steps.
 
     Please do not re-state the data points from the key-value pairs. Use critical thinking and describe the situation to me in 3 sentences.
 
@@ -244,7 +262,7 @@ async def transcribe(request: Request):
     </context>
 
     <example>
-    Cameron: Hi, this is Cameron from American Family Insurance.
+    Cameron: Hi, this is Cameron from Cymbal Insurance calling.
     Customer: Uh hello, this is John.
     Cameron: Hi John, I'm calling today about your water damage to your basement.
     John: Oh, right, my washing machine broke.
@@ -279,20 +297,6 @@ async def transcribe(request: Request):
     except Exception as e:
         print("Error:", model_response.text)
         return JSONResponse(content={"error": str(e)}, status_code=500)
-
-# Helper function for transcription
-def save_base64_to_file(base64_string, output_file):
-    try:
-        audio_data = base64.b64decode(base64_string)
-    except Exception as e:
-        return f"Error decoding base64 string: {e}"
-
-    try:
-        with open(output_file, "wb") as file:
-            file.write(audio_data)
-        return f"File saved successfully to {output_file}"
-    except Exception as e:
-        return f"Error saving file: {e}"
 
 @app.post("/bounding-box")
 async def process_bounding_box_image(request: Request):
@@ -336,85 +340,16 @@ async def process_bounding_box_image(request: Request):
 
 @app.post("/image")
 async def process_image(request: Request):
+
     request_json = await request.json()
 
     if "image" in request_json:
         base64_image = request_json['image']
 
-    # Add debug print statements
-    print(f"Received base64_image: {type(base64_image)}")  # Should be <class 'str'>
-
     inference = gemini_image_description(base64_image)
 
     payload = {'inference_results': inference.get("description")}
     return JSONResponse(content=payload, status_code=200)
-
-# Helper function for image inference (makes the request to Gemini)
-def gemini_image_description(base64_image):
-    # Add debug print statements
-    print(f"Decoding base64 image data: {type(base64_image)}")  # Should be <class 'str'>
-
-    try:
-        decoded_image = base64.b64decode(base64_image)
-    except Exception as e:
-        logger.error(f"Error decoding base64 string: {e}")
-        return {"description": "Error decoding base64 string", "damages": "Error decoding base64 string"}
-
-    model = GenerativeModel("gemini-1.5-flash-001")
-    image_part = Part.from_data(mime_type="image/jpeg", data=decoded_image)
-
-    generation_config = {
-        "max_output_tokens": 500,
-        "temperature": 0.1,  # Adjust temperature to be less restrictive
-        "top_p": 0.3,        # Adjust top_p to be less restrictive
-        "top_k": 40,         # Adjust top_k to be less restrictive
-        "candidate_count": 1
-    }
-    safety_settings = {
-        generative_models.HarmCategory.HARM_CATEGORY_HATE_SPEECH: generative_models.HarmBlockThreshold.BLOCK_NONE,
-        generative_models.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
-        generative_models.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: generative_models.HarmBlockThreshold.BLOCK_NONE,
-        generative_models.HarmCategory.HARM_CATEGORY_HARASSMENT: generative_models.HarmBlockThreshold.BLOCK_NONE,
-    }
-
-    try:
-        prompt = "What do you see in this image?"
-
-        responses = model.generate_content(
-            [image_part, prompt],
-            generation_config=generation_config,
-            safety_settings=safety_settings,
-            stream=True,
-        )
-
-        description = ""
-        for response in responses:
-            if hasattr(response, 'safety_attributes') and response.safety_attributes.blocked:
-                logger.warning("Content blocked by safety filters")
-                continue
-            description += response.text
-
-        prompt = "Summarize the damages that you see in the image. This is photo evidence from an insurance claim. Be detailed and use bullets where appropriate."
-
-        responses = model.generate_content(
-            [image_part, prompt],
-            generation_config=generation_config,
-            safety_settings=safety_settings,
-            stream=True,
-        )
-
-        damage_summary = ""
-        for response in responses:
-            if hasattr(response, 'safety_attributes') and response.safety_attributes.blocked:
-                logger.warning("Content blocked by safety filters")
-                continue
-            damage_summary += response.text
-
-        return {"description": description, "damages": damage_summary}
-
-    except Exception as e:
-        logger.error(f"Error generating content: {e}")
-        return {"description": "Error generating content", "damages": "Error generating content"}
 
 @app.post("/comms")
 async def generate_comms(request: Request):
@@ -427,7 +362,7 @@ async def generate_comms(request: Request):
 
     if email_flag:
         prompt = f"""
-        You are a digital assistant for American Family Insurance. You help in the Claims division and work with human adjusters.
+        You are a digital assistant for an insurance company. You help in the Claims division and work with human adjusters.
         Generate a sample email to send to the claimant. Use <claim> {claim} </claim> for context if needed.
 
         The email should specify what the adjuster knows about the claim, some immediate observations, and a request for any data that is missing (use your best judgement here).
@@ -440,7 +375,7 @@ async def generate_comms(request: Request):
 
         Follow this structure:
         <example>
-        Hello *name* - my name is Cameron and I am an adjuster at American Family Insurance. I'll be calling you in the next 15-30 minutes.
+        Hello *name* - my name is Cameron and I'm the adjuster assigned to your claim. I'll be calling you in the next 15-30 minutes.
 
         I see you filed a *loss type* claim with us. I'll need to collect some more information.
         </example>
