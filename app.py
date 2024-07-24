@@ -8,7 +8,6 @@ import json
 
 import vertexai
 from vertexai.generative_models import GenerativeModel, ChatSession, Part, Content
-import vertexai.preview.generative_models as generative_models
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,16 +62,30 @@ async def main(request: Request):
     return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
 
 # Helper function for the Chat endpoint
-def get_chat_session(session_id: str, context: str) -> ChatSession:
+def get_chat_session(session_id: str, claim_str: str) -> ChatSession:
 
     logger.info(f"CHAT SESSIONS: {chat_sessions}")
+    #logger.info(f"CONTEXT: {context}")
 
     if session_id not in chat_sessions:
+        # Set the context for each Chat session
+        context = f"""
+        You are a digital assistant for Insurance Adjusters. You work in the Claims department.
+        Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
+        Be succinct and ensure the user gets the pertinent and important information.
+
+        Here is the current claim that is being analyzed:
+        <claim>
+        {claim_str}
+        </claim>"""
+
+        # Initialize the model, create a ChatSession object, and add the session to our in-memory store
         model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
         chat = model.start_chat()
         chat_sessions[session_id] = chat
 
         logger.info(f"CHAT SESSION ADDED: {session_id}")
+
     return chat_sessions[session_id]
 
 @app.post("/chat", response_model=ChatResponse)
@@ -103,38 +116,14 @@ async def chat(chat_request: ChatRequest):
     # Grab the claim / image_description sent in the POST bodys
     claim = chat_request.claim
     image_description = chat_request.image_description
+    # Store the loss description for usage with the RAG retriever
+    loss_description = claim.get("loss_description")
     # Convert the claim dictionary to a formatted string for the context
     claim_str = json.dumps(claim, indent=2)
 
-    # Set the context based on claim and optionally image_description
-    if image_description:
-
-        context = f"""
-        You are a digital assistant for Insurance Adjusters.
-        Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
-        Be succinct and ensure the user gets the pertinent and important information.
-
-        <image_description>
-        {image_description}
-        </image_description>
-
-        <claim>
-        {claim_str}
-        </claim>"""
-
-    else:
-
-        context = f"""
-        You are a digital assistant within the insurance industry.
-        You work in the Claims department and you help adjusters. Here is the current claim that the adjuster is working on:
-        <claim>
-        {claim_str}
-        </claim>"""
-
-    #logger.info(f"CONTEXT: {context}")
-
     # Grab the session_id (if sent in the POST body) OR generate a new one
     session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
+
      # Grab the messages + history
     messages = chat_request.messages
 
@@ -150,22 +139,6 @@ async def chat(chat_request: ChatRequest):
     # Most recent message in the array is the user's current prompt
     message = messages[-1].content
     logger.info(f"MESSAGE: {message}")
-
-    # Get or create chat session
-    chat = get_chat_session(session_id, context)
-    logger.info(f"CHAT HISTORY: {chat.history}")
-    #logger.info(f"SESSION ID: {session_id}")
-
-    parameters = {
-        "max_output_tokens": 8192,
-        "temperature": 0.8,
-        "top_p": 0.8,
-        "top_k": 40,
-        "candidate_count": 1,
-    }
-
-    # Store the loss description for usage with the RAG retriever
-    loss_description = claim.get("loss_description")
 
     # Prompt to send to Vertex AI / LlamaIndex for RAG
     rag_prompt = f"""
@@ -186,20 +159,38 @@ async def chat(chat_request: ChatRequest):
         logger.error(f"Error generating RAG response: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-    rag_and_message_prompt = f"""
+    enriched_prompt = f"""
     Use the response from the Retrieval Augmented Generation (RAG) system if relevant. Ignore if it is not related to the user's question.
     <rag-response>
     {rag_response}
     </rag-response>
 
-    Always answer this question / prompt:
+    If the user's question is related to an image or submitted evidence, use this image description:
+    <image-description>
+    {image_description}
+    </image-description>
+
+    Make sure to reference your memory and historical questions + answers. Always answer this question / prompt directly:
     <user-question>
     {message}
     </user-question>
     """
 
+    # Get or create chat session
+    chat = get_chat_session(session_id, claim_str)
+    #logger.info(f"CHAT HISTORY: {chat.history}")
+    #logger.info(f"SESSION ID: {session_id}")
+
     try:
-        model_response = chat.send_message(rag_and_message_prompt, generation_config=parameters)
+        parameters = {
+            "max_output_tokens": 8192,
+            "temperature": 0.8,
+            "top_p": 0.8,
+            "top_k": 40,
+            "candidate_count": 1,
+        }
+
+        model_response = chat.send_message(enriched_prompt, generation_config=parameters)
 
         response = ChatResponse(
             session_id=session_id,
@@ -436,4 +427,3 @@ if __name__ == "__main__":
   port = int(os.environ.get('PORT', 8080))
   import uvicorn
   uvicorn.run(app, host="0.0.0.0", port=port)
-
