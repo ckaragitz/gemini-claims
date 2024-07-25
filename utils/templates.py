@@ -20,6 +20,10 @@ def get_prompt_template(template_name: str):
     {loss_description}
     <claim>
 
+    <chat_history>
+    {chat_history}
+    </chat_history>
+
     <user-question>
     {message}
     </user-question>
