@@ -7,7 +7,7 @@ SERVICE_ACCOUNT="function@amfam-claims.iam.gserviceaccount.com"
 APP_NAME="claims"
 
 # Build the Docker image
-gcloud builds submit --tag us-docker.pkg.dev/$PROJECT_ID/container/amfam-claims --source .
+gcloud builds submit --tag us-docker.pkg.dev/$PROJECT_ID/container/$APP_NAME --source .
 
 gcloud run deploy $APP_NAME \
   --project $PROJECT_ID \
