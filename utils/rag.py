@@ -119,8 +119,12 @@ def generate_rag_context(prompt=""):
         )
 
         # Access the text from each context in the response
-        contextual_text = response.contexts.contexts[0].text
-        source = response.contexts.contexts[0].source_uri
+        if response:
+            contextual_text = response.contexts.contexts[0].text
+            source = response.contexts.contexts[0].source_uri
+        else:
+            contextual_text = "No relevant documents"
+            source = "No relevant documents"
 
         return {"context": contextual_text, "source_uri": source}
 
