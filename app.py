@@ -17,7 +17,7 @@ from typing import List, Optional
 
 from utils.audio import save_base64_to_file
 from utils.image import gemini_image_description
-from utils.rag import generate_rag_response
+from utils.rag import generate_rag_context
 from utils.templates import get_prompt_template
 
 import logging
@@ -71,11 +71,11 @@ def get_chat_session(session_id: str, claim_str: str) -> ChatSession:
     if session_id not in chat_sessions:
         # Set the context for each Chat session
         # Fetch the system instruction template
-        context_template = get_prompt_template("context")
-        context_prompt = context_template.format(claim=claim_str)
+        system_context_template = get_prompt_template("system_context")
+        system_context_prompt = system_context_template.format(claim=claim_str)
 
         # Initialize the model, create a ChatSession object, and add the session to our in-memory store
-        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context_prompt])
+        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[system_context_prompt])
         chat = model.start_chat()
         chat_sessions[session_id] = chat
 
@@ -110,39 +110,34 @@ async def chat(chat_request: ChatRequest):
 
     #### Gather the variables from the POST request #######
     claim = chat_request.claim
-    loss_description = claim.get("loss_description")
-    # Convert the claim dictionary to a formatted string for the context prompt
     claim_str = json.dumps(claim, indent=2)
 
     image_description = chat_request.image_description
 
     messages = chat_request.messages
-    # Most recent message in the array is the user's current prompt
     message = messages[-1].content
     logger.info(f"MESSAGE: {message}")
 
     # Grab the session_id (if sent in the POST body) OR generate a new one
     session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
 
-    # Get or create chat session
-    chat = get_chat_session(session_id, claim_str)
-    #logger.info(f"CHAT HISTORY: {chat.history}")
-
-    # Prompt to send to Vertex AI / LlamaIndex for RAG
-    rag_template = get_prompt_template("rag")
-    rag_prompt = rag_template.format(loss_description=loss_description, chat_history=chat.history, message=message)
-
     try:
-        # Parse documents, including the customer's policy, to ground the answers
-        rag_response = generate_rag_response(prompt=rag_prompt)
-        logger.info(f"RAG RESPONSE: {rag_response}")
+        # Parse documents, including the customer's policy, to ground the answers with retrieved context
+        rag_response = generate_rag_context(prompt=message)
+        rag_context = rag_response["context"]
+        rag_source = rag_response["source_uri"]
+        logger.info(f"RAG CONTEXT: {rag_response}")
     except Exception as e:
         logger.error(f"Error generating RAG response: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+    # Get or create chat session
+    chat = get_chat_session(session_id, claim_str)
+
     # Template and prompt for Gemini multi-turn chat
     chat_template = get_prompt_template("chat")
-    chat_prompt = chat_template.format(rag_response=rag_response, image_description=image_description, message=message)
+    chat_prompt = chat_template.format(rag_context=rag_context, image_description=image_description, message=message)
+    logger.info(f"CHAT PROMPT: {chat_prompt}")
 
     try:
         parameters = {
