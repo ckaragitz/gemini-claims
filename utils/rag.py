@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Global variables
 project_id = "amfam-claims"
 location = "us-central1"
+paths = ["gs://ck-claims-data/policy", "gs://ck-claims-data/misc"]
 
 # Initialize Vertex AI API once per session
 vertexai.init(project=project_id, location=location)
@@ -36,7 +37,7 @@ def create_corpus(display_name):
         logger.error(f"Error creating corpus: {e}")
         return str(e)
 
-def ingest_files(paths):
+def ingest_files(paths=paths):
 
     rag_corpus_name = get_first_corpus()
 
@@ -51,8 +52,7 @@ def ingest_files(paths):
 
     return file_import_response
 
-def list_corpora():
-    # Lists all RagCorpora instances
+def list_entire_corpora():
     try:
         corpora = rag.list_corpora()
 
@@ -65,7 +65,7 @@ def list_corpora():
         return str(e)
 
 def get_first_corpus():
-    # Grabs the first corpus and returns it's name - assuming you only have one
+    # Grabs the first corpus's name - assuming you only have one
     try:
         corpora = rag.list_corpora()
 
@@ -75,7 +75,7 @@ def get_first_corpus():
 
         return corpus_name
     except Exception as e:
-        logger.error(f"Error getting name: {e}")
+        logger.error(f"Error listing corpora: {e}")
         return str(e)
 
 def list_files_in_corpus():
@@ -99,36 +99,31 @@ def delete_corpus(rag_corpus_name):
         logger.error(f"Error deleting corpus: {e}")
         return str(e)
 
-def generate_rag_response(prompt=""):
+def generate_rag_context(prompt=""):
 
     rag_corpus_name = get_first_corpus()
 
     try:
-        # Create a RAG retrieval tool
-        rag_retrieval_tool = Tool.from_retrieval(
-            retrieval=rag.Retrieval(
-                source=rag.VertexRagStore(
-                    rag_resources=[
-                        RagResource(
-                            rag_corpus=rag_corpus_name,  # Currently only 1 corpus is allowed.
-                            # Supply IDs from `rag.list_files()`.
-                            # rag_file_ids=["rag-file-1", "rag-file-2", ...],
-                        )
-                    ],
-                    similarity_top_k=3,
-                    vector_distance_threshold=0.5,
-                ),
+        # Direct context retrieval
+        response = rag.retrieval_query(
+        rag_resources=[
+            rag.RagResource(
+                rag_corpus=rag_corpus_name,
+                # Supply IDs from `rag.list_files()`.
+                # rag_file_ids=["rag-file-1", "rag-file-2", ...],
             )
+        ],
+        text=prompt,
+        similarity_top_k=1,  # Optional
+        vector_distance_threshold=0.5,  # Optional
         )
 
-        # Create a gemini-pro model instance
-        rag_model = GenerativeModel(
-            model_name="gemini-1.5-flash-001", tools=[rag_retrieval_tool]
-        )
+        # Access the text from each context in the response
+        contextual_text = response.contexts.contexts[0].text
+        source = response.contexts.contexts[0].source_uri
 
-        # Generate response
-        response = rag_model.generate_content(prompt)
-        return response.text
+        return {"context": contextual_text, "source_uri": source}
+
     except Exception as e:
-        logger.error(f"Error generating RAG response: {e}")
+        logger.error(f"Error generating RAG context: {e}")
         return str(e)
