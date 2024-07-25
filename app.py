@@ -108,24 +108,29 @@ async def chat(chat_request: ChatRequest):
         }
     """
 
-    # Gather the variables from the POST request
+    #### Gather the variables from the POST request #######
     claim = chat_request.claim
     loss_description = claim.get("loss_description")
-    image_description = chat_request.image_description
-    messages = chat_request.messages
-    # Convert the claim dictionary to a formatted string for the context
+    # Convert the claim dictionary to a formatted string for the context prompt
     claim_str = json.dumps(claim, indent=2)
 
-    # Grab the session_id (if sent in the POST body) OR generate a new one
-    session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
+    image_description = chat_request.image_description
 
+    messages = chat_request.messages
     # Most recent message in the array is the user's current prompt
     message = messages[-1].content
     logger.info(f"MESSAGE: {message}")
 
+    # Grab the session_id (if sent in the POST body) OR generate a new one
+    session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
+
+    # Get or create chat session
+    chat = get_chat_session(session_id, claim_str)
+    #logger.info(f"CHAT HISTORY: {chat.history}")
+
     # Prompt to send to Vertex AI / LlamaIndex for RAG
     rag_template = get_prompt_template("rag")
-    rag_prompt = rag_template.format(loss_description=loss_description, message=message)
+    rag_prompt = rag_template.format(loss_description=loss_description, chat_history=chat.history, message=message)
 
     try:
         # Parse documents, including the customer's policy, to ground the answers
@@ -135,14 +140,9 @@ async def chat(chat_request: ChatRequest):
         logger.error(f"Error generating RAG response: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-    # Fetch the template
+    # Template and prompt for Gemini multi-turn chat
     chat_template = get_prompt_template("chat")
     chat_prompt = chat_template.format(rag_response=rag_response, image_description=image_description, message=message)
-
-    # Get or create chat session
-    chat = get_chat_session(session_id, claim_str)
-    #logger.info(f"CHAT HISTORY: {chat.history}")
-    #logger.info(f"SESSION ID: {session_id}")
 
     try:
         parameters = {
