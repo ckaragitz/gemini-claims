@@ -18,6 +18,7 @@ from typing import List, Optional
 from utils.audio import save_base64_to_file
 from utils.image import gemini_image_description
 from utils.rag import generate_rag_response
+from utils.templates import get_prompt_template
 
 import logging
 
@@ -59,7 +60,7 @@ class ChatResponse(BaseModel):
 
 @app.get("/")
 async def main(request: Request):
-    return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms"]}, status_code=200)
+    return JSONResponse(content={"Available APIs": ["/chat", "/summarize", "/transcribe", "/bounding-box", "/image", "/comms", "/notes"]}, status_code=200)
 
 # Helper function for the Chat endpoint
 def get_chat_session(session_id: str, claim_str: str) -> ChatSession:
@@ -69,18 +70,12 @@ def get_chat_session(session_id: str, claim_str: str) -> ChatSession:
 
     if session_id not in chat_sessions:
         # Set the context for each Chat session
-        context = f"""
-        You are a digital assistant for Insurance Adjusters. You work in the Claims department.
-        Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
-        Be succinct and ensure the user gets the pertinent and important information.
-
-        Here is the current claim that is being analyzed:
-        <claim>
-        {claim_str}
-        </claim>"""
+        # Fetch the system instruction template
+        context_template = get_prompt_template("context")
+        context_prompt = context_template.format(claim=claim_str)
 
         # Initialize the model, create a ChatSession object, and add the session to our in-memory store
-        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context])
+        model = GenerativeModel("gemini-1.5-flash-001", system_instruction=[context_prompt])
         chat = model.start_chat()
         chat_sessions[session_id] = chat
 
@@ -113,43 +108,24 @@ async def chat(chat_request: ChatRequest):
         }
     """
 
-    # Grab the claim / image_description sent in the POST bodys
+    # Gather the variables from the POST request
     claim = chat_request.claim
-    image_description = chat_request.image_description
-    # Store the loss description for usage with the RAG retriever
     loss_description = claim.get("loss_description")
+    image_description = chat_request.image_description
+    messages = chat_request.messages
     # Convert the claim dictionary to a formatted string for the context
     claim_str = json.dumps(claim, indent=2)
 
     # Grab the session_id (if sent in the POST body) OR generate a new one
     session_id = chat_request.session_id if chat_request.session_id else str(uuid4())
 
-     # Grab the messages + history
-    messages = chat_request.messages
-
-    '''
-    # Build message history as an array of Content objects
-    message_history = [
-        Content(role="model" if msg.role == "assistant" else msg.role,
-                parts=[Part.from_text(msg.content)])
-        for msg in messages
-    ]
-    '''
-
     # Most recent message in the array is the user's current prompt
     message = messages[-1].content
     logger.info(f"MESSAGE: {message}")
 
     # Prompt to send to Vertex AI / LlamaIndex for RAG
-    rag_prompt = f"""
-    <claim>
-    {loss_description}
-    <claim>
-
-    <user-question>
-    {message}
-    </user-question>
-    """
+    rag_template = get_prompt_template("rag")
+    rag_prompt = rag_template.format(loss_description=loss_description, message=message)
 
     try:
         # Parse documents, including the customer's policy, to ground the answers
@@ -159,22 +135,9 @@ async def chat(chat_request: ChatRequest):
         logger.error(f"Error generating RAG response: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-    enriched_prompt = f"""
-    Use the response from the Retrieval Augmented Generation (RAG) system if relevant. Ignore if it is not related to the user's question.
-    <rag-response>
-    {rag_response}
-    </rag-response>
-
-    If the user's question is related to an image or submitted evidence, use this image description:
-    <image-description>
-    {image_description}
-    </image-description>
-
-    Make sure to reference your memory and historical questions + answers. Always answer this question / prompt directly:
-    <user-question>
-    {message}
-    </user-question>
-    """
+    # Fetch the template
+    chat_template = get_prompt_template("chat")
+    chat_prompt = chat_template.format(rag_response=rag_response, image_description=image_description, message=message)
 
     # Get or create chat session
     chat = get_chat_session(session_id, claim_str)
@@ -190,7 +153,7 @@ async def chat(chat_request: ChatRequest):
             "candidate_count": 1,
         }
 
-        model_response = chat.send_message(enriched_prompt, generation_config=parameters)
+        model_response = chat.send_message(chat_prompt, generation_config=parameters)
 
         response = ChatResponse(
             session_id=session_id,
@@ -210,13 +173,9 @@ async def summarize_claim(request: Request):
 
     claim = request_json.get("claim")
 
-    prompt = f"""
-    Look at this Insurance Claim <claim> {claim} </claim>. Summarize it for me very succinctly.
-    I am an adjuster for an insurance company. I need to know the immediate details, if I should act quickly, call out observations, and tell me my recommended next steps.
-
-    Please do not re-state the data points from the key-value pairs. Use critical thinking and describe the situation to me in 3 sentences.
-
-    Use bulletpoints where appropriate."""
+    # Fetch the template
+    summary_template = get_prompt_template("summary")
+    prompt = summary_template.format(claim=claim)
 
     # initialize the model, set the parameters
     model = GenerativeModel("gemini-1.5-flash-001")
@@ -280,23 +239,9 @@ async def transcribe(request: Request):
         if os.path.exists(temp_wav_file):
             os.remove(temp_wav_file)
 
-    prompt = """
-    <context>
-    I'm going to give you a transcription from a call. Your job is to take the transcription and re-organize it based on who is speaking.
-    </context>
-
-    <example>
-    Cameron: Hi, this is Cameron from Cymbal Insurance calling.
-    Customer: Uh hello, this is John.
-    Cameron: Hi John, I'm calling today about your water damage to your basement.
-    John: Oh, right, my washing machine broke.
-    </example>
-
-    <transcription>
-    {}
-    </transcription>
-
-    Return the results in markdown, making the names bold.""".format(text)
+    # Fetch the template
+    transcription_template = get_prompt_template("transcription")
+    prompt = transcription_template.format(audio_transcript=text)
 
     # initialize the model, set the parameters
     model = GenerativeModel("gemini-1.5-flash-001")
@@ -382,25 +327,13 @@ async def generate_comms(request: Request):
     claim = request_json.get("claim")
 
     if email_flag:
-        prompt = f"""
-        You are a digital assistant for an insurance company. You help in the Claims division and work with human adjusters.
-        Generate a sample email to send to the claimant. Use <claim> {claim} </claim> for context if needed.
-
-        The email should specify what the adjuster knows about the claim, some immediate observations, and a request for any data that is missing (use your best judgement here).
-        Feel free to be creative as well. Sound personable and mix it up each time. But always use the claimant's name and Cameron's name (user).
-        """
+        # Fetch the template
+        email_template = get_prompt_template("email")
+        prompt = email_template.format(claim=claim)
     elif sms_flag:
-        prompt = f"""
-        Use <claim> {claim} </claim> for context.
-        Generate a sample Text Message / SMS  to send to the claimant.
-
-        Follow this structure:
-        <example>
-        Hello *name* - my name is Cameron and I'm the adjuster assigned to your claim. I'll be calling you in the next 15-30 minutes.
-
-        I see you filed a *loss type* claim with us. I'll need to collect some more information.
-        </example>
-        """
+        # Fetch the template
+        sms_template = get_prompt_template("sms")
+        prompt = sms_template.format(claim=claim)
 
     # initialize the model, set the parameters
     model = GenerativeModel("gemini-1.5-flash-001")
@@ -422,6 +355,41 @@ async def generate_comms(request: Request):
     except Exception as e:
         print("Error:", model_response.text)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/notes")
+async def generate_notes(request: Request):
+
+    request_json = await request.json()
+
+    claim = request_json.get('claim')
+    audio_transcript = request_json.get('audio_transcript', '')
+
+    # Fetch the template
+    notes_template = get_prompt_template("notes")
+    prompt = notes_template.format(claim=claim, audio_transcript=audio_transcript)
+    #logger.info(f"NOTES PROMPT: {prompt}")
+
+    # initialize the model, set the parameters
+    model = GenerativeModel("gemini-1.5-flash-001")
+    parameters = {
+        "max_output_tokens": 8192,
+        "temperature": 0.2,
+        "top_p": 0.8,
+        "top_k": 40,
+        "candidate_count": 1,
+    }
+
+    try:
+        model_response = model.generate_content(
+        prompt,
+        generation_config=parameters,
+        )
+
+        return PlainTextResponse(content=model_response.text, status_code=200)
+    except Exception as e:
+        print("Error:", model_response.text)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 
 if __name__ == "__main__":
   port = int(os.environ.get('PORT', 8080))
