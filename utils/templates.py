@@ -5,7 +5,7 @@ logger = logging.getLogger(__name__)
 
 def get_prompt_template(template_name: str):
 
-    context_template = """
+    system_context_template = """
     You are a digital assistant for Insurance Adjusters. You work in the Claims department.
     Be helpful and answer all of their questions. Always return data that is bulleted in markdown format.
     Be succinct and ensure the user gets the pertinent and important information.
@@ -15,25 +15,11 @@ def get_prompt_template(template_name: str):
     {claim}
     </claim>"""
 
-    rag_template = """
-    <claim>
-    {loss_description}
-    <claim>
-
-    <chat_history>
-    {chat_history}
-    </chat_history>
-
-    <user-question>
-    {message}
-    </user-question>
-    """
-
     chat_template = """
-    Use the response from the Retrieval Augmented Generation (RAG) system if relevant. Ignore if it is not related to the user's question.
-    <rag-response>
-    {rag_response}
-    </rag-response>
+    Use the context from the Retrieval Augmented Generation (RAG) system if relevant to help you answer the question.
+    <rag-context>
+    {rag_context}
+    </rag-context>
 
     If the user's question is related to an image or submitted evidence, use this image description:
     <image-description>
@@ -113,8 +99,7 @@ def get_prompt_template(template_name: str):
     """
 
     templates = {
-        "context": context_template,
-        "rag": rag_template,
+        "system_context": system_context_template,
         "chat": chat_template,
         "summary": summary_template,
         "transcription": transcription_template,
