@@ -1,17 +1,18 @@
 #!/bin/bash
 
 # Set the project ID and region
-PROJECT_ID="amfam-claims"
+PROJECT_ID="YOUR PROJECT ID HERE"
 REGION="us-central1"
-SERVICE_ACCOUNT="function@amfam-claims.iam.gserviceaccount.com"
-APP_NAME="claims"
+SERVICE_ACCOUNT="YOUR SA HERE"
+APP_NAME="YOUR APP NAME HERE"
 
 # Build the Docker image
-gcloud builds submit --tag us-docker.pkg.dev/$PROJECT_ID/container/$APP_NAME --source .
+gcloud builds submit --tag us-docker.pkg.dev/$PROJECT_ID/$APP_NAME:latest
 
+# Deploy to Cloud Run
 gcloud run deploy $APP_NAME \
   --project $PROJECT_ID \
-  --image us-docker.pkg.dev/$PROJECT_ID/container/$APP_NAME:latest \
+  --image us-docker.pkg.dev/$PROJECT_ID/$APP_NAME:latest \
   --platform managed \
   --region $REGION \
   --port 8080 \

@@ -8,8 +8,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-### The function that delivers the grounded response is called 'generate_rag_response' ###
-
 # Global variables
 project_id = "amfam-claims"
 location = "us-central1"
@@ -115,7 +113,7 @@ def generate_rag_context(prompt=""):
         ],
         text=prompt,
         similarity_top_k=1,  # Optional
-        vector_distance_threshold=0.5,  # Optional
+        vector_distance_threshold=0.4,  # Optional
         )
 
         # Access the text from each context in the response

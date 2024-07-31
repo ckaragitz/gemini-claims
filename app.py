@@ -66,11 +66,9 @@ async def main(request: Request):
 def get_chat_session(session_id: str, claim_str: str) -> ChatSession:
 
     logger.info(f"CHAT SESSIONS: {chat_sessions}")
-    #logger.info(f"CONTEXT: {context}")
 
     if session_id not in chat_sessions:
         # Set the context for each Chat session
-        # Fetch the system instruction template
         system_context_template = get_prompt_template("system_context")
         system_context_prompt = system_context_template.format(claim=claim_str)
 
